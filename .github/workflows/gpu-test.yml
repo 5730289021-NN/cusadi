@@ -1,0 +1,61 @@
+name: GPU test (self-hosted)
+
+# Only push / manual triggers: never pull_request, so fork PRs on this
+# public repo cannot run code on the self-hosted machine.
+on:
+  push:
+    branches: [main, ci/self-hosted-gpu-test]
+  workflow_dispatch:
+
+jobs:
+  gpu-test:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner environment
+        run: |
+          set +e
+          uname -a
+          cat /etc/os-release | head -4
+          echo "--- GPU";   nvidia-smi || echo "nvidia-smi NOT FOUND"
+          echo "--- nvcc";  nvcc --version || ls -d /usr/local/cuda*/bin/nvcc || echo "nvcc NOT FOUND"
+          echo "--- cmake"; cmake --version || echo "cmake NOT FOUND"
+          echo "--- make";  make --version | head -1 || echo "make NOT FOUND"
+          echo "--- python"; python3 --version
+
+      - name: Put CUDA on PATH
+        run: |
+          if ! command -v nvcc >/dev/null; then
+            for d in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
+              [ -x "$d/nvcc" ] && echo "$d" >> "$GITHUB_PATH" && break
+            done
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # requirements.txt does not resolve (torch>=2.8 vs old triton/nvidia-*/sympy pins),
+      # so install a consistent set directly.
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "casadi==3.6.4" numpy matplotlib torch
+          python -c "import torch, casadi; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available()); print('casadi', casadi.__version__)"
+
+      - name: Codegen + compile CUDA (test.casadi)
+        run: python run_codegen.py --fn=test
+
+      - name: Evaluate on GPU and compare with CasADi
+        run: |
+          python run_cusadi_function_test.py --fn=test --num_envs=4000 | tee eval.log
+          python - <<'EOF'
+          import re, sys
+          errs = [float(x) for x in re.findall(r"error norm:\s*([0-9.eE+-]+)", open("eval.log").read())]
+          print("error norms:", errs)
+          if not errs or max(errs) > 1e-8:
+              sys.exit("FAIL: missing or too-large error vs CasADi")
+          print("PASS")
+          EOF
