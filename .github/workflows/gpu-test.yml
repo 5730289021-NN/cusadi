@@ -29,9 +29,11 @@ jobs:
         run: |
           if ! command -v nvcc >/dev/null; then
             for d in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
-              [ -x "$d/nvcc" ] && echo "$d" >> "$GITHUB_PATH" && break
+              if [ -x "$d/nvcc" ]; then echo "$d" >> "$GITHUB_PATH"; break; fi
             done
           fi
+          command -v nvcc >/dev/null || ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1 \
+            || echo "::warning::nvcc not found; install the CUDA toolkit on this runner"
 
       - uses: actions/setup-python@v5
         with:
